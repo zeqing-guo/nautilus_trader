@@ -7,7 +7,7 @@
 use std::any::Any;
 
 use nautilus_common::factories::ClientConfig;
-use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_model::identifiers::{AccountId, InstrumentId, TraderId};
 
 use crate::common::consts::BINANCE_PM_WS_URL;
 use crate::websocket::listen_key::{
@@ -53,6 +53,14 @@ pub struct BinancePmExecClientConfig {
     /// 生产账户实测(2026-08-12)为 hedge 模式,适配器两种模式都支持
     /// (hedge:positionSide 必传、reduceOnly 禁传)→ 缺省 false。
     pub enforce_one_way_mode: bool,
+    /// mass 对账(引擎不带 instrument 过滤时)覆盖的腿集合。
+    ///
+    /// **必须显式声明本部署实际交易的 instrument**:cache 里是行情客户端灌入
+    /// 的币安全目录(数千 symbol),按 cache 扫描会对每个 symbol 打一次
+    /// allOrders/myTrades(margin allOrders 权重 100)→ 秒爆 IP 权重上限
+    /// (2026-08-13 生产实测 -1003,6000/min)。为空时 mass 对账直接报错
+    /// (fail-closed),拒绝退化成全目录扫描。
+    pub reconcile_instrument_ids: Vec<InstrumentId>,
 }
 
 impl Default for BinancePmExecClientConfig {
@@ -72,6 +80,7 @@ impl Default for BinancePmExecClientConfig {
             dead_stream_after_ms: DEFAULT_DEAD_STREAM_AFTER_MS,
             create_retry_cooldown_ms: DEFAULT_CREATE_RETRY_COOLDOWN_MS,
             enforce_one_way_mode: false,
+            reconcile_instrument_ids: Vec::new(),
         }
     }
 }

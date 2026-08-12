@@ -150,7 +150,9 @@ impl BinancePmExecutionClient {
             .map(|i| (i.id(), i.price_precision(), i.size_precision()))
     }
 
-    /// 全部已加载 BINANCE instrument(两腿;对账无 instrument 过滤时的目标集)。
+    /// 全部已加载 BINANCE instrument。**仅限内存用途**(connect 时构建用户流
+    /// 事件映射的精度快照——混流事件可能属于任意 symbol,含旧系统的单);
+    /// 严禁作为 API 调用的目标集,那是 reconcile_targets 的职责。
     fn known_instruments(&self) -> Vec<(InstrumentId, u8, u8)> {
         let cache = self.core.cache();
         cache
@@ -158,6 +160,37 @@ impl BinancePmExecutionClient {
             .into_iter()
             .map(|i| (i.id(), i.price_precision(), i.size_precision()))
             .collect()
+    }
+
+    /// mass 对账目标集:显式 instrument 优先,否则取配置声明的交易腿。
+    ///
+    /// 绝不按 cache 全量扫描——cache 里是行情客户端灌入的币安全目录
+    /// (数千 symbol),逐个打 allOrders(margin 权重 100)会秒爆 IP 权重
+    /// (2026-08-13 生产实测 -1003)。配置为空时报错 fail-closed。
+    fn reconcile_targets(
+        &self,
+        explicit: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<(InstrumentId, u8, u8)>> {
+        if let Some(id) = explicit {
+            let Some((pp, sp)) = self.resolve_precisions(&id) else {
+                anyhow::bail!("cache 缺 instrument {id},拒绝以错误精度出报告");
+            };
+            return Ok(vec![(id, pp, sp)]);
+        }
+        if self.config.reconcile_instrument_ids.is_empty() {
+            anyhow::bail!(
+                "mass 对账需要 config.reconcile_instrument_ids 显式声明交易腿;\
+                 拒绝按 cache 全目录扫描(会触发 -1003 IP 权重超限)"
+            );
+        }
+        let mut targets = Vec::with_capacity(self.config.reconcile_instrument_ids.len());
+        for id in &self.config.reconcile_instrument_ids {
+            let Some((pp, sp)) = self.resolve_precisions(id) else {
+                anyhow::bail!("cache 缺 instrument {id}(行情客户端未加载?),对账中止");
+            };
+            targets.push((*id, pp, sp));
+        }
+        Ok(targets)
     }
 
     #[allow(dead_code)] // 切片 B(submit/cancel)启用。
@@ -837,16 +870,9 @@ impl ExecutionClient for BinancePmExecutionClient {
         let ts_init = self.clock.get_time_ns();
         let mut reports = Vec::new();
 
-        // 目标腿集合:指定 instrument 只查该腿;否则两腿全部已加载 instrument。
-        let targets: Vec<(InstrumentId, u8, u8)> = match cmd.instrument_id {
-            Some(id) => {
-                let Some((pp, sp)) = self.resolve_precisions(&id) else {
-                    anyhow::bail!("cache 缺 instrument {id},拒绝以错误精度出报告");
-                };
-                vec![(id, pp, sp)]
-            }
-            None => self.known_instruments(),
-        };
+        // 目标腿集合:指定 instrument 只查该腿;否则取配置声明的交易腿
+        // (绝不按 cache 全目录扫描,见 reconcile_targets)。
+        let targets = self.reconcile_targets(cmd.instrument_id)?;
 
         for (instrument_id, pp, sp) in targets {
             let symbol = format_binance_symbol(&instrument_id);
@@ -930,15 +956,7 @@ impl ExecutionClient for BinancePmExecutionClient {
         let ts_init = self.clock.get_time_ns();
         let mut reports = Vec::new();
 
-        let targets: Vec<(InstrumentId, u8, u8)> = match cmd.instrument_id {
-            Some(id) => {
-                let Some((pp, sp)) = self.resolve_precisions(&id) else {
-                    anyhow::bail!("cache 缺 instrument {id},拒绝以错误精度出报告");
-                };
-                vec![(id, pp, sp)]
-            }
-            None => self.known_instruments(),
-        };
+        let targets = self.reconcile_targets(cmd.instrument_id)?;
 
         let start_ms = cmd.start.map(nanos_to_ms);
         let end_ms = cmd.end.map(nanos_to_ms);
