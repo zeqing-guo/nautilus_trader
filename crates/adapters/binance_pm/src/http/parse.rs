@@ -20,7 +20,7 @@ use crate::http::models::{PmMarginOrder, PmMarginTrade, PmUmOrder, PmUmPositionR
 ///
 /// `EXPIRED_IN_MATCH`(STP 触发过期)与 `EXPIRED` 同归 Expired——成因不同但
 /// 对账语义相同(无挂单,已成交部分以 fills 为准)。
-fn map_order_status(status: &str) -> anyhow::Result<OrderStatus> {
+pub(crate) fn map_order_status(status: &str) -> anyhow::Result<OrderStatus> {
     match status {
         "NEW" => Ok(OrderStatus::Accepted),
         "PARTIALLY_FILLED" => Ok(OrderStatus::PartiallyFilled),
@@ -32,7 +32,7 @@ fn map_order_status(status: &str) -> anyhow::Result<OrderStatus> {
     }
 }
 
-fn map_order_side(side: &str) -> anyhow::Result<OrderSide> {
+pub(crate) fn map_order_side(side: &str) -> anyhow::Result<OrderSide> {
     match side {
         "BUY" => Ok(OrderSide::Buy),
         "SELL" => Ok(OrderSide::Sell),
@@ -44,7 +44,7 @@ fn map_order_side(side: &str) -> anyhow::Result<OrderSide> {
 ///
 /// UM 的 post-only 藏在 TIF(GTX),margin 的藏在类型(LIMIT_MAKER);
 /// `LIQUIDATION` 是交易所强平单(系统单),映射为 Market。
-fn map_order_type(order_type: &str) -> anyhow::Result<(OrderType, bool)> {
+pub(crate) fn map_order_type(order_type: &str) -> anyhow::Result<(OrderType, bool)> {
     match order_type {
         "LIMIT" => Ok((OrderType::Limit, false)),
         "MARKET" => Ok((OrderType::Market, false)),
@@ -55,7 +55,7 @@ fn map_order_type(order_type: &str) -> anyhow::Result<(OrderType, bool)> {
 }
 
 /// TIF 映射;返回 `(TIF, post_only)`(GTX = GTC + post_only)。
-fn map_tif(tif: &str) -> anyhow::Result<(TimeInForce, bool)> {
+pub(crate) fn map_tif(tif: &str) -> anyhow::Result<(TimeInForce, bool)> {
     match tif {
         "GTC" => Ok((TimeInForce::Gtc, false)),
         "IOC" => Ok((TimeInForce::Ioc, false)),

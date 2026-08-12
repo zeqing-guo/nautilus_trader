@@ -10,6 +10,7 @@
 //! (本 fork 的头号参照物);切片推进:A 账户建模(本文件当前)→ B 下单/撤单
 //! → C 三类报告生成器 → D 用户流编排(listenKey 状态机 + 事件分发)。
 
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,6 +50,7 @@ use crate::http::query::{
     PmAllOrdersParams, PmMarginNewOrderParams, PmOrderRefParams, PmTradesParams,
     PmUmNewOrderParams, validate_client_order_id,
 };
+use crate::websocket::runtime;
 
 /// UM 永续 instrument 的 symbol 后缀(上游 `format_instrument_id` 惯例:
 /// 现货 `BTCUSDT.BINANCE`,UM 永续 `BTCUSDT-PERP.BINANCE`)。
@@ -492,6 +494,78 @@ impl ExecutionClient for BinancePmExecutionClient {
         self.core.set_disconnected();
         self.connected.store(false, Ordering::Relaxed);
         log::info!("Stopped: client_id={}", self.core.client_id);
+        Ok(())
+    }
+
+    async fn connect(&mut self) -> anyhow::Result<()> {
+        if self.core.is_connected() {
+            return Ok(());
+        }
+
+        // 1. 启动强制校验 one-way 持仓模式(reduceOnly 语义前提;fail-closed)。
+        if self.config.enforce_one_way_mode {
+            let mode = self
+                .http_client
+                .um_position_mode()
+                .await
+                .map_err(|e| anyhow::anyhow!("持仓模式校验失败,拒绝启动: {e}"))?;
+            anyhow::ensure!(
+                !mode.dual_side_position,
+                "账户为 hedge(双向)持仓模式,与 one-way/reduceOnly 语义冲突——拒绝启动。\
+                 请先在交易所切换为单向模式"
+            );
+        }
+
+        // 2. 账户快照先行(AccountState 必须在任何订单事件前就绪)。
+        self.refresh_account_state()
+            .await
+            .map_err(|e| anyhow::anyhow!("启动账户快照失败: {e}"))?;
+
+        // 3. instrument 精度快照(流任务在多线程 runtime,不能触碰 ?Send cache)。
+        let snapshot: runtime::InstrumentSnapshot =
+            Arc::new(std::sync::RwLock::new(HashMap::new()));
+        {
+            let mut guard = snapshot.write().expect("instrument snapshot poisoned");
+            for (id, pp, sp) in self.known_instruments() {
+                let symbol = format_binance_symbol(&id);
+                guard.insert((symbol, is_um_leg(&id)), (id, pp, sp));
+            }
+            anyhow::ensure!(
+                !guard.is_empty(),
+                "cache 无已加载 BINANCE instrument,用户流事件将无法映射——拒绝启动"
+            );
+        }
+
+        // 4. 拉起用户流任务(listenKey 创建由状态机首个 poll 触发;
+        //    先开流缓冲、再全量对账的次序由引擎 reconciliation 保证)。
+        let ctx = runtime::StreamCtx {
+            http: self.http_client.clone(),
+            emitter: self.emitter.clone(),
+            account_id: self.core.account_id,
+            instruments: snapshot,
+            config: self.config.clone(),
+            cancel: self.cancellation_token.clone(),
+            clock: self.clock,
+        };
+        self.pending_tasks.spawn("pm_user_stream", async move {
+            runtime::run_user_stream(ctx).await;
+            Ok(())
+        });
+
+        self.core.set_connected();
+        self.connected.store(true, Ordering::Relaxed);
+        log::info!("Connected: PM 用户流任务已拉起");
+        Ok(())
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        if self.core.is_disconnected() {
+            return Ok(());
+        }
+        self.cancellation_token.cancel();
+        self.core.set_disconnected();
+        self.connected.store(false, Ordering::Relaxed);
+        log::info!("Disconnected: PM 用户流任务已取消");
         Ok(())
     }
 

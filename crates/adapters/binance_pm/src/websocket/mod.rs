@@ -3,5 +3,7 @@
 //! 后续切片:client(连接/24h 轮换)、handler、recovery(listenKey 生命周期 +
 //! 死流检测——fstream 对任意路径都 101,握手成功不等于流健康)。
 
+pub mod dispatch;
 pub mod listen_key;
 pub mod messages;
+pub mod runtime;
