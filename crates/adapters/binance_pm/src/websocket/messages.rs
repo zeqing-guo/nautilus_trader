@@ -54,6 +54,10 @@ pub enum PmUserStreamEvent {
     ConditionalOrderTradeUpdate(serde_json::Value),
     /// 算法单事件(替代 conditional,我方不用;安全忽略但不丢日志)。
     AlgoUpdate(serde_json::Value),
+    /// UM 持仓历史推送(fs=UM,平仓后收到;信息性,官方 papi 文档词表未列,
+    /// 2026-08-13 生产首笔平仓实测出现)。仓位真相走 positionRisk/ACCOUNT_UPDATE,
+    /// 此事件安全忽略但不丢日志。
+    PositionHistoryUpdate(serde_json::Value),
     /// 未知事件名或缺 `e` 字段:调用方必须告警 + 落原文,绝不静默丢弃。
     Unknown {
         /// 事件名(缺 `e` 时为 None)。
@@ -157,6 +161,9 @@ pub fn parse_user_stream_event(raw: &str) -> PmUserStreamEvent {
         }
         "ALGO_UPDATE" => {
             parse_or_unknown!(serde_json::Value, PmUserStreamEvent::AlgoUpdate)
+        }
+        "POSITION_HISTORY_UPDATE" => {
+            parse_or_unknown!(serde_json::Value, PmUserStreamEvent::PositionHistoryUpdate)
         }
         _ => PmUserStreamEvent::Unknown {
             event_type: Some(event_type),
@@ -767,6 +774,19 @@ mod tests {
             parse_user_stream_event(raw),
             PmUserStreamEvent::AlgoUpdate(_)
         ));
+    }
+
+    #[test]
+    fn position_history_update_is_known_ignorable() {
+        // 生产真实报文(2026-08-13 首笔平仓实测;官方 papi 文档词表未列)。
+        let raw = r#"{"e":"POSITION_HISTORY_UPDATE","T":1786552275443,"E":1786552275446,
+            "fs":"UM","o":{"p":"1137465213708775424","s":"SOLUSDC","ps":"SHORT",
+            "c":"-0.0095232","f":"0.09708559","cp":"-1.90869998","i":"0.0",
+            "cq":"-0.0095232","ix":0,"am":"0.0"}}"#;
+        match parse_user_stream_event(raw) {
+            PmUserStreamEvent::PositionHistoryUpdate(_) => {}
+            other => panic!("expected PositionHistoryUpdate, got {other:?}"),
+        }
     }
 
     #[test]

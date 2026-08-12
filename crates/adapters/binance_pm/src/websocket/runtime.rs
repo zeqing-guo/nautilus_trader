@@ -423,6 +423,10 @@ fn handle_event(
             log::debug!("忽略条件单/算法单事件(本策略不使用)");
             Vec::new()
         }
+        PmUserStreamEvent::PositionHistoryUpdate(_) => {
+            log::debug!("忽略 UM 持仓历史推送(信息性;仓位真相走 positionRisk/ACCOUNT_UPDATE)");
+            Vec::new()
+        }
         PmUserStreamEvent::Unknown { event_type, raw } => {
             log::error!(
                 "未知用户流事件(须人工核查,词表可能漂移)type={event_type:?} raw={}",
