@@ -20,6 +20,7 @@
 pub mod common;
 pub mod config;
 pub mod data_types;
+pub mod execution;
 pub mod http;
 pub mod sdk;
 pub mod websocket;
