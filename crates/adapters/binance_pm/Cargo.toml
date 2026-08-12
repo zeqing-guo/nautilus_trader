@@ -16,10 +16,17 @@ crate-type = ["rlib"]
 
 [features]
 default = ["high-precision"]
-high-precision = ["nautilus-binance/high-precision"]
+high-precision = [
+  "nautilus-binance/high-precision",
+  "nautilus-model/high-precision",
+]
 
 [dependencies]
 nautilus-binance = { workspace = true }
+nautilus-common = { workspace = true, features = ["live"] }
+nautilus-core = { workspace = true }
+nautilus-live = { workspace = true }
+nautilus-model = { workspace = true }
 nautilus-network = { workspace = true }
 
 # 官方 Binance SDK(MIT):只读/对账/listenKey 路径的 wire 层一律走它(官方周更维护)。
@@ -28,12 +35,18 @@ nautilus-network = { workspace = true }
 binance-sdk = { version = "=68.1.1", features = ["derivatives_trading_portfolio_margin"] }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
 jiff = { workspace = true }
 log = { workspace = true }
+rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_urlencoded = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+ustr = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
