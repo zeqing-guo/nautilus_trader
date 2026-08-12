@@ -14,25 +14,31 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::Context;
 use nautilus_binance::common::consts::BINANCE_VENUE;
 use nautilus_binance::common::symbol::format_binance_symbol;
 use nautilus_common::clients::ExecutionClient;
 use nautilus_common::live::runner::get_exec_event_sender;
-use nautilus_common::messages::execution::{CancelAllOrders, CancelOrder, SubmitOrder};
+use nautilus_common::messages::execution::{
+    CancelAllOrders, CancelOrder, GenerateFillReports, GenerateOrderStatusReport,
+    GenerateOrderStatusReports, GeneratePositionStatusReports, SubmitOrder,
+};
 use nautilus_core::{UUID4, UnixNanos, time::AtomicTime, time::get_atomic_clock_realtime};
 use nautilus_live::{ExecutionClientCore, emitter::ExecutionEventEmitter};
 use nautilus_model::accounts::AccountAny;
 use nautilus_model::enums::{AccountType, OmsType, OrderSide, OrderType, TimeInForce};
 use nautilus_model::events::{AccountState, OrderEventAny, OrderRejected};
 use nautilus_model::identifiers::{AccountId, ClientId, InstrumentId, Venue};
+use nautilus_model::instruments::Instrument;
 use nautilus_model::orders::Order;
+use nautilus_model::reports::{FillReport, OrderStatusReport, PositionStatusReport};
 use nautilus_model::types::{AccountBalance, Currency, MarginBalance, Money};
 use rust_decimal::Decimal;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::error::{
-    BinancePmHttpError, BinancePmHttpResult, CODE_GTX_REJECT, CODE_NEW_ORDER_REJECTED,
-    MSG_WOULD_IMMEDIATELY_MATCH, PmOutcome,
+    BinancePmHttpError, BinancePmHttpResult, CODE_CANCEL_UNKNOWN_ORDER, CODE_GTX_REJECT,
+    CODE_NEW_ORDER_REJECTED, CODE_ORDER_DOES_NOT_EXIST, MSG_WOULD_IMMEDIATELY_MATCH, PmOutcome,
 };
 use crate::common::tasks::TaskHandles;
 use crate::config::BinancePmExecClientConfig;
@@ -40,7 +46,8 @@ use crate::data_types::BinancePmAccountRisk;
 use crate::http::client::BinancePmHttpClient;
 use crate::http::models::{PmAccount, PmBalance};
 use crate::http::query::{
-    PmMarginNewOrderParams, PmOrderRefParams, PmUmNewOrderParams, validate_client_order_id,
+    PmAllOrdersParams, PmMarginNewOrderParams, PmOrderRefParams, PmTradesParams,
+    PmUmNewOrderParams, validate_client_order_id,
 };
 
 /// UM 永续 instrument 的 symbol 后缀(上游 `format_instrument_id` 惯例:
@@ -118,6 +125,34 @@ impl BinancePmExecutionClient {
             pending_tasks: TaskHandles::default(),
             connected: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// 从 cache 取 instrument 精度;缺失返回 None(调用方拒绝以错误精度出报告)。
+    fn resolve_precisions(&self, instrument_id: &InstrumentId) -> Option<(u8, u8)> {
+        let cache = self.core.cache();
+        cache
+            .instrument(instrument_id)
+            .map(|i| (i.price_precision(), i.size_precision()))
+    }
+
+    /// 按 symbol 精确解析已加载 instrument(含精度)。
+    fn resolve_leg_instrument(&self, symbol: &str) -> Option<(InstrumentId, u8, u8)> {
+        let cache = self.core.cache();
+        cache
+            .instruments(&BINANCE_VENUE, None)
+            .into_iter()
+            .find(|i| i.id().symbol.as_str() == symbol)
+            .map(|i| (i.id(), i.price_precision(), i.size_precision()))
+    }
+
+    /// 全部已加载 BINANCE instrument(两腿;对账无 instrument 过滤时的目标集)。
+    fn known_instruments(&self) -> Vec<(InstrumentId, u8, u8)> {
+        let cache = self.core.cache();
+        cache
+            .instruments(&BINANCE_VENUE, None)
+            .into_iter()
+            .map(|i| (i.id(), i.price_precision(), i.size_precision()))
+            .collect()
     }
 
     #[allow(dead_code)] // 切片 B(submit/cancel)启用。
@@ -394,6 +429,7 @@ fn is_post_only_rejection(err: &BinancePmHttpError) -> bool {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl ExecutionClient for BinancePmExecutionClient {
     fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
@@ -599,6 +635,309 @@ impl ExecutionClient for BinancePmExecutionClient {
         });
 
         Ok(())
+    }
+
+    /// 单笔查单裁决(引擎 in-flight 检查按 client_order_id 调用)。
+    ///
+    /// ⚠️ `-2013`/`-2011` 返回 `Ok(None)`(订单不存在):**该结论只在下单后
+    /// 3 天内可信**(CANCELED/EXPIRED 且无成交且超 3 天的单查不到)。引擎的
+    /// in-flight 检查针对新近订单,处于可信窗内;历史裁决须走成交流水。
+    async fn generate_order_status_report(
+        &self,
+        cmd: &GenerateOrderStatusReport,
+    ) -> anyhow::Result<Option<OrderStatusReport>> {
+        let Some(instrument_id) = cmd.instrument_id else {
+            log::warn!("generate_order_status_report 缺 instrument_id,无法路由腿");
+            return Ok(None);
+        };
+        let symbol = format_binance_symbol(&instrument_id);
+        let um = is_um_leg(&instrument_id);
+
+        let params = if let Some(client_order_id) = cmd.client_order_id {
+            PmOrderRefParams::by_client_order_id(symbol, client_order_id.to_string())
+        } else if let Some(venue_order_id) = &cmd.venue_order_id {
+            let order_id: i64 = venue_order_id
+                .as_str()
+                .parse()
+                .context("venue_order_id 不是数字")?;
+            PmOrderRefParams::by_order_id(symbol, order_id)
+        } else {
+            anyhow::bail!("查单须携带 client_order_id 或 venue_order_id");
+        };
+
+        let ts_init = self.clock.get_time_ns();
+        let Some((pp, sp)) = self.resolve_precisions(&instrument_id) else {
+            anyhow::bail!("cache 缺 instrument {instrument_id},拒绝以错误精度出报告");
+        };
+
+        let result = if um {
+            match self.http_client.query_um_order(&params).await {
+                Ok(o) => Ok(Some(o.to_order_status_report(
+                    self.core.account_id,
+                    instrument_id,
+                    pp,
+                    sp,
+                    ts_init,
+                )?)),
+                Err(e) => Err(e),
+            }
+        } else {
+            match self.http_client.query_margin_order(&params).await {
+                Ok(o) => Ok(Some(o.to_order_status_report(
+                    self.core.account_id,
+                    instrument_id,
+                    pp,
+                    sp,
+                    ts_init,
+                )?)),
+                Err(e) => Err(e),
+            }
+        };
+
+        match result {
+            Ok(report) => Ok(report),
+            Err(BinancePmHttpError::BinanceError { code, .. })
+                if code == CODE_ORDER_DOES_NOT_EXIST || code == CODE_CANCEL_UNKNOWN_ORDER =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn generate_order_status_reports(
+        &self,
+        cmd: &GenerateOrderStatusReports,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        let ts_init = self.clock.get_time_ns();
+        let mut reports = Vec::new();
+
+        // 目标腿集合:指定 instrument 只查该腿;否则两腿全部已加载 instrument。
+        let targets: Vec<(InstrumentId, u8, u8)> = match cmd.instrument_id {
+            Some(id) => {
+                let Some((pp, sp)) = self.resolve_precisions(&id) else {
+                    anyhow::bail!("cache 缺 instrument {id},拒绝以错误精度出报告");
+                };
+                vec![(id, pp, sp)]
+            }
+            None => self.known_instruments(),
+        };
+
+        for (instrument_id, pp, sp) in targets {
+            let symbol = format_binance_symbol(&instrument_id);
+            let um = is_um_leg(&instrument_id);
+
+            if cmd.open_only {
+                if um {
+                    for o in self.http_client.um_open_orders(&symbol).await? {
+                        push_or_alert(
+                            o.to_order_status_report(
+                                self.core.account_id,
+                                instrument_id,
+                                pp,
+                                sp,
+                                ts_init,
+                            ),
+                            &mut reports,
+                        );
+                    }
+                } else {
+                    for o in self.http_client.margin_open_orders(&symbol).await? {
+                        push_or_alert(
+                            o.to_order_status_report(
+                                self.core.account_id,
+                                instrument_id,
+                                pp,
+                                sp,
+                                ts_init,
+                            ),
+                            &mut reports,
+                        );
+                    }
+                }
+            } else {
+                // UM allOrders 时间跨度 <7 天由引擎 lookback 保证;
+                // margin allOrders 权重 100——本路径只按需调用,不轮询。
+                let params = PmAllOrdersParams {
+                    symbol,
+                    order_id: None,
+                    start_time: cmd.start.map(nanos_to_ms),
+                    end_time: cmd.end.map(nanos_to_ms),
+                    limit: None,
+                };
+                if um {
+                    for o in self.http_client.um_all_orders(&params).await? {
+                        push_or_alert(
+                            o.to_order_status_report(
+                                self.core.account_id,
+                                instrument_id,
+                                pp,
+                                sp,
+                                ts_init,
+                            ),
+                            &mut reports,
+                        );
+                    }
+                } else {
+                    for o in self.http_client.margin_all_orders(&params).await? {
+                        push_or_alert(
+                            o.to_order_status_report(
+                                self.core.account_id,
+                                instrument_id,
+                                pp,
+                                sp,
+                                ts_init,
+                            ),
+                            &mut reports,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(reports)
+    }
+
+    async fn generate_fill_reports(
+        &self,
+        cmd: GenerateFillReports,
+    ) -> anyhow::Result<Vec<FillReport>> {
+        let ts_init = self.clock.get_time_ns();
+        let mut reports = Vec::new();
+
+        let targets: Vec<(InstrumentId, u8, u8)> = match cmd.instrument_id {
+            Some(id) => {
+                let Some((pp, sp)) = self.resolve_precisions(&id) else {
+                    anyhow::bail!("cache 缺 instrument {id},拒绝以错误精度出报告");
+                };
+                vec![(id, pp, sp)]
+            }
+            None => self.known_instruments(),
+        };
+
+        let start_ms = cmd.start.map(nanos_to_ms);
+        let end_ms = cmd.end.map(nanos_to_ms);
+
+        for (instrument_id, pp, sp) in targets {
+            let symbol = format_binance_symbol(&instrument_id);
+            let um = is_um_leg(&instrument_id);
+
+            if um {
+                let params = PmTradesParams {
+                    symbol,
+                    order_id: None,
+                    start_time: start_ms,
+                    end_time: end_ms,
+                    from_id: None,
+                    limit: None,
+                };
+                for t in self.http_client.um_user_trades(&params).await? {
+                    push_or_alert(
+                        t.to_fill_report(self.core.account_id, instrument_id, pp, sp, ts_init),
+                        &mut reports,
+                    );
+                }
+            } else {
+                // margin myTrades 时间窗必须 <24h,按 23h 切片回补。
+                let windows = match (start_ms, end_ms) {
+                    (Some(s), Some(e)) => chunk_windows_ms(s, e, MARGIN_TRADES_MAX_SPAN_MS),
+                    (Some(s), None) => {
+                        chunk_windows_ms(s, nanos_to_ms(ts_init), MARGIN_TRADES_MAX_SPAN_MS)
+                    }
+                    _ => vec![(0, 0)], // 无时间窗:单次调用走 API 默认
+                };
+                for (ws, we) in windows {
+                    let params = PmTradesParams {
+                        symbol: symbol.clone(),
+                        order_id: cmd
+                            .venue_order_id
+                            .as_ref()
+                            .and_then(|v| v.as_str().parse().ok()),
+                        start_time: (ws > 0).then_some(ws),
+                        end_time: (we > 0).then_some(we),
+                        from_id: None,
+                        limit: None,
+                    };
+                    for t in self.http_client.margin_my_trades(&params).await? {
+                        push_or_alert(
+                            t.to_fill_report(self.core.account_id, instrument_id, pp, sp, ts_init),
+                            &mut reports,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(reports)
+    }
+
+    async fn generate_position_status_reports(
+        &self,
+        cmd: &GeneratePositionStatusReports,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        let ts_now = self.clock.get_time_ns();
+        let mut reports = Vec::new();
+
+        // 仅 UM 有持仓概念(margin 现货是库存,不出 position report)。
+        let symbol_filter = cmd.instrument_id.and_then(|id| {
+            if is_um_leg(&id) {
+                Some(format_binance_symbol(&id))
+            } else {
+                None
+            }
+        });
+        if cmd.instrument_id.is_some() && symbol_filter.is_none() {
+            return Ok(reports); // margin instrument:无持仓报告
+        }
+
+        let positions = self
+            .http_client
+            .um_position_risk(symbol_filter.as_deref())
+            .await?;
+
+        for p in positions {
+            let perp_symbol = format!("{}{UM_PERP_SUFFIX}", p.symbol);
+            let Some((instrument_id, _pp, sp)) = self.resolve_leg_instrument(&perp_symbol) else {
+                log::warn!("positionRisk 返回未加载 instrument {},跳过并告警", p.symbol);
+                continue;
+            };
+            push_or_alert(
+                p.to_position_status_report(self.core.account_id, instrument_id, sp, ts_now),
+                &mut reports,
+            );
+        }
+
+        Ok(reports)
+    }
+}
+
+/// margin myTrades 单窗上限(23h,官方限制 <24h 留余量)。
+const MARGIN_TRADES_MAX_SPAN_MS: i64 = 23 * 60 * 60 * 1000;
+
+fn nanos_to_ms(t: UnixNanos) -> i64 {
+    (t.as_u64() / 1_000_000) as i64
+}
+
+/// 把 [start, end] 切成不超过 `max_span` 的窗口序列(闭区间毫秒)。
+fn chunk_windows_ms(start: i64, end: i64, max_span: i64) -> Vec<(i64, i64)> {
+    if end <= start {
+        return vec![(start, end.max(start))];
+    }
+    let mut out = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        let window_end = (cursor + max_span).min(end);
+        out.push((cursor, window_end));
+        cursor = window_end;
+    }
+    out
+}
+
+/// 转换失败必须可见:记 error 级日志(接告警通道),绝不静默丢弃。
+fn push_or_alert<T>(result: anyhow::Result<T>, out: &mut Vec<T>) {
+    match result {
+        Ok(r) => out.push(r),
+        Err(e) => log::error!("报告转换失败(未知枚举/格式漂移,须人工核查):{e}"),
     }
 }
 
@@ -823,6 +1162,25 @@ mod tests {
             status: 400,
         };
         assert!(!is_post_only_rejection(&other));
+    }
+
+    #[test]
+    fn margin_trade_windows_chunk_under_24h() {
+        // margin myTrades 时间窗 <24h:48h 区间必须切成 3 片(23h+23h+2h)。
+        let day_ms = 24 * 60 * 60 * 1000;
+        let windows = chunk_windows_ms(0, 2 * day_ms, MARGIN_TRADES_MAX_SPAN_MS);
+        assert_eq!(windows.len(), 3);
+        assert!(
+            windows
+                .iter()
+                .all(|(s, e)| e - s <= MARGIN_TRADES_MAX_SPAN_MS)
+        );
+        assert_eq!(windows.first().unwrap().0, 0);
+        assert_eq!(windows.last().unwrap().1, 2 * day_ms);
+        // 窗口首尾相接,不留缝隙。
+        for pair in windows.windows(2) {
+            assert_eq!(pair[0].1, pair[1].0);
+        }
     }
 
     #[test]
