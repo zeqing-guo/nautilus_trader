@@ -137,24 +137,19 @@ impl BinancePmExecutionClient {
             self.core.account_type,
             ts_now,
         );
-        self.emitter.emit_account_state(
-            state.balances.clone(),
-            state.margins.clone(),
-            true,
-            ts_now,
-        );
+        self.emitter
+            .emit_account_state(state.balances, state.margins, true, ts_now);
 
-        let risk = build_account_risk(&account, ts_now);
-        if let Some(risk) = risk {
-            if risk.is_kill_level() {
-                // KILL 触发源:账户已进 REDUCE_ONLY/FORCE_LIQUIDATION。
-                log::error!(
-                    "PM 账户风险等级 {}(uniMMR={}),KILL 级告警",
-                    risk.account_status,
-                    risk.uni_mmr
-                );
-            }
-            // 后续切片 D:经 data bus 发布 CustomData 给策略/风控/监控。
+        // KILL 触发源:账户已进 REDUCE_ONLY/FORCE_LIQUIDATION。
+        // 后续切片 D:经 data bus 发布 CustomData 给策略/风控/监控。
+        if let Some(risk) = build_account_risk(&account, ts_now)
+            && risk.is_kill_level()
+        {
+            log::error!(
+                "PM 账户风险等级 {}(uniMMR={}),KILL 级告警",
+                risk.account_status,
+                risk.uni_mmr
+            );
         }
         Ok(())
     }

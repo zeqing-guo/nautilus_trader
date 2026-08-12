@@ -5993,16 +5993,25 @@ name = "nautilus-binance-pm"
 version = "0.62.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "binance-sdk",
+ "futures-util",
  "jiff",
  "log",
  "nautilus-binance",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-live",
+ "nautilus-model",
  "nautilus-network",
+ "rust_decimal",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
+ "ustr",
 ]
 
 [[package]]
