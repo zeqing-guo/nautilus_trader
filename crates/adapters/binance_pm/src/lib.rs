@@ -20,3 +20,4 @@
 pub mod common;
 pub mod http;
 pub mod sdk;
+pub mod websocket;
