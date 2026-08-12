@@ -90,6 +90,109 @@ pub struct PmAccount {
     pub update_time: Option<i64>,
 }
 
+/// UM 订单(下单/撤单/查单响应与 allOrders 条目同构)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmUmOrder {
+    /// 交易对。
+    pub symbol: String,
+    /// 交易所订单 ID。
+    pub order_id: i64,
+    /// clientOrderId。
+    pub client_order_id: String,
+    /// 状态(NEW/PARTIALLY_FILLED/FILLED/CANCELED/EXPIRED/EXPIRED_IN_MATCH…;
+    /// wire 层保持 String,执行层收窄且未知值归 Unknown+告警)。
+    pub status: String,
+    /// 委托价。
+    pub price: String,
+    /// 成交均价。
+    #[serde(default)]
+    pub avg_price: Option<String>,
+    /// 原始数量。
+    pub orig_qty: String,
+    /// 已成交数量。
+    pub executed_qty: String,
+    /// 累计成交金额。
+    #[serde(default)]
+    pub cum_quote: Option<String>,
+    /// GTC/IOC/FOK/GTX/GTD。
+    pub time_in_force: String,
+    /// LIMIT/MARKET。
+    #[serde(rename = "type")]
+    pub order_type: String,
+    /// 是否 reduceOnly。
+    #[serde(default)]
+    pub reduce_only: bool,
+    /// BUY/SELL。
+    pub side: String,
+    /// 持仓方向(one-way 恒 BOTH)。
+    #[serde(default)]
+    pub position_side: Option<String>,
+    /// 更新时间(ms)。
+    pub update_time: i64,
+}
+
+/// margin 订单响应的成交明细(仅 `newOrderRespType=FULL`)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmMarginFill {
+    /// 成交价。
+    pub price: String,
+    /// 成交量。
+    pub qty: String,
+    /// 手续费。
+    pub commission: String,
+    /// 手续费资产。
+    pub commission_asset: String,
+    /// Trade ID(FillReport 幂等键)。
+    #[serde(default)]
+    pub trade_id: Option<i64>,
+}
+
+/// margin 订单(下单/撤单/查单响应同构;历史单 `cummulativeQuoteQty < 0`
+/// 表示数据暂不可用)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmMarginOrder {
+    /// 交易对。
+    pub symbol: String,
+    /// 交易所订单 ID。
+    pub order_id: i64,
+    /// clientOrderId(撤单响应中为撤单请求 id,原单在 `origClientOrderId`)。
+    pub client_order_id: String,
+    /// 原单 clientOrderId(撤单响应)。
+    #[serde(default)]
+    pub orig_client_order_id: Option<String>,
+    /// 状态。
+    pub status: String,
+    /// 委托价。
+    pub price: String,
+    /// 原始数量。
+    pub orig_qty: String,
+    /// 已成交数量。
+    pub executed_qty: String,
+    /// 累计成交金额(< 0 = 数据暂不可用)。
+    #[serde(default)]
+    pub cummulative_quote_qty: Option<String>,
+    /// GTC/IOC/FOK。
+    #[serde(default)]
+    pub time_in_force: Option<String>,
+    /// LIMIT/MARKET/LIMIT_MAKER/…。
+    #[serde(rename = "type")]
+    pub order_type: String,
+    /// BUY/SELL。
+    pub side: String,
+    /// 下单响应时间(ms;查单响应用 updateTime)。
+    #[serde(default)]
+    pub transact_time: Option<i64>,
+    /// 更新时间(ms)。
+    #[serde(default)]
+    pub update_time: Option<i64>,
+    /// 成交明细(仅 FULL;CCXT 认为 papi 不支持 FULL,待 L3 实测)。
+    #[serde(default)]
+    pub fills: Vec<PmMarginFill>,
+}
+
 /// `GET /papi/v1/um/positionRisk` 单持仓条目(返回数组)。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

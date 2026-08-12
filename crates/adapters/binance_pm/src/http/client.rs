@@ -19,9 +19,13 @@ use crate::common::consts::{
 };
 use crate::common::error::{BinancePmHttpError, BinancePmHttpResult};
 use crate::http::models::{
-    BinanceErrorResponse, PmAccount, PmBalance, PmListenKey, PmServerTime, PmUmPositionRisk,
+    BinanceErrorResponse, PmAccount, PmBalance, PmListenKey, PmMarginOrder, PmServerTime,
+    PmUmOrder, PmUmPositionRisk,
 };
-use crate::http::query::{PmBalanceParams, PmPositionRiskParams};
+use crate::http::query::{
+    PmBalanceParams, PmMarginNewOrderParams, PmOpenOrdersParams, PmOrderRefParams,
+    PmPositionRiskParams, PmUmNewOrderParams,
+};
 
 /// 端点安全模式(官方 Security Type 三态)。
 ///
@@ -185,6 +189,177 @@ impl BinancePmHttpClient {
         self.request(
             Method::GET,
             "/papi/v1/um/positionRisk",
+            Some(&params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `POST /papi/v1/um/order`(签名,占下单配额)——UM 腿下单。
+    ///
+    /// 写路径纪律:调用方须先 `validate_client_order_id`;结果错误经
+    /// `outcome_for_write` 三分类——GTX 穿价 `-5022` 归 Rejected(确定不存在,
+    /// 可改价重发,**绝不当 Unknown 走查单**);超时/5xx 归 Unknown(禁盲重发,
+    /// 按 client_order_id 查单裁决)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn submit_um_order(
+        &self,
+        params: &PmUmNewOrderParams,
+    ) -> BinancePmHttpResult<PmUmOrder> {
+        self.request(
+            Method::POST,
+            "/papi/v1/um/order",
+            Some(params),
+            Security::Signed,
+            true,
+        )
+        .await
+    }
+
+    /// `POST /papi/v1/margin/order`(签名,占下单配额)——margin 腿下单
+    /// (sideEffectType 恒 NO_SIDE_EFFECT,由参数类型保证)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错(LIMIT_MAKER 穿价 = `-2010` +
+    /// `"Order would immediately match and take."`)。
+    pub async fn submit_margin_order(
+        &self,
+        params: &PmMarginNewOrderParams,
+    ) -> BinancePmHttpResult<PmMarginOrder> {
+        self.request(
+            Method::POST,
+            "/papi/v1/margin/order",
+            Some(params),
+            Security::Signed,
+            true,
+        )
+        .await
+    }
+
+    /// `DELETE /papi/v1/um/order`(签名)——UM 撤单。
+    ///
+    /// `-2011`/`-2013` = 订单未知/不存在 → 转 Reconciler 按 client_order_id
+    /// 裁决(注意 -2013 只在下单后 3 天内可信)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn cancel_um_order(
+        &self,
+        params: &PmOrderRefParams,
+    ) -> BinancePmHttpResult<PmUmOrder> {
+        self.request(
+            Method::DELETE,
+            "/papi/v1/um/order",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `DELETE /papi/v1/margin/order`(签名)——margin 撤单。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn cancel_margin_order(
+        &self,
+        params: &PmOrderRefParams,
+    ) -> BinancePmHttpResult<PmMarginOrder> {
+        self.request(
+            Method::DELETE,
+            "/papi/v1/margin/order",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/um/order`(签名)——UM 查单(Reconciler 裁决路径)。
+    ///
+    /// ⚠️ 3 天保留期:CANCELED/EXPIRED 且无成交且超 3 天的单查不到——
+    /// 调用方必须携带下单时刻,只在 T+3d 内信任 `-2013`,超窗降级为
+    /// userTrades 成交流水裁决。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn query_um_order(
+        &self,
+        params: &PmOrderRefParams,
+    ) -> BinancePmHttpResult<PmUmOrder> {
+        self.request(
+            Method::GET,
+            "/papi/v1/um/order",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/margin/order`(签名,权重 10)——margin 查单。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn query_margin_order(
+        &self,
+        params: &PmOrderRefParams,
+    ) -> BinancePmHttpResult<PmMarginOrder> {
+        self.request(
+            Method::GET,
+            "/papi/v1/margin/order",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/um/openOrders?symbol=`(签名,带 symbol 权重 1)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn um_open_orders(&self, symbol: &str) -> BinancePmHttpResult<Vec<PmUmOrder>> {
+        let params = PmOpenOrdersParams {
+            symbol: symbol.to_string(),
+        };
+        self.request(
+            Method::GET,
+            "/papi/v1/um/openOrders",
+            Some(&params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/margin/openOrders?symbol=`(签名,权重 5)。
+    ///
+    /// symbol 强制:不带 symbol 按全市场 symbol 数计费(天价)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn margin_open_orders(
+        &self,
+        symbol: &str,
+    ) -> BinancePmHttpResult<Vec<PmMarginOrder>> {
+        let params = PmOpenOrdersParams {
+            symbol: symbol.to_string(),
+        };
+        self.request(
+            Method::GET,
+            "/papi/v1/margin/openOrders",
             Some(&params),
             Security::Signed,
             false,
