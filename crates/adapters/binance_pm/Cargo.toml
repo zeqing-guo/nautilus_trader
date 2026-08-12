@@ -49,6 +49,7 @@ tokio-util = { workspace = true }
 ustr = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 tokio = { workspace = true }
 
 # 运行:cargo run --example binance-pm-ping --package nautilus-binance-pm

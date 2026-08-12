@@ -5994,6 +5994,7 @@ version = "0.62.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "binance-sdk",
  "futures-util",
  "jiff",
