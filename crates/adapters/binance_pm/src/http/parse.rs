@@ -129,12 +129,11 @@ impl PmUmOrder {
         if let Some(price) = parse_opt_price(&self.price, price_precision)? {
             report = report.with_price(price);
         }
-        if let Some(avg) = self.avg_price.as_deref() {
-            if let Ok(dec) = avg.parse::<Decimal>()
-                && dec > Decimal::ZERO
-            {
-                report = report.with_avg_px(dec);
-            }
+        if let Some(avg) = self.avg_price.as_deref()
+            && let Ok(dec) = avg.parse::<Decimal>()
+            && dec > Decimal::ZERO
+        {
+            report = report.with_avg_px(dec);
         }
         Ok(report)
     }
