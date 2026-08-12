@@ -56,3 +56,9 @@ tokio = { workspace = true }
 name = "binance-pm-ping"
 path = "examples/pm_ping_tester.rs"
 doc = false
+
+# 运行:sops exec-env secrets.trading.enc.env 'cargo run --example binance-pm-readonly --package nautilus-binance-pm'
+[[example]]
+name = "binance-pm-readonly"
+path = "examples/pm_readonly_tester.rs"
+doc = false
