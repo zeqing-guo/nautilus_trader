@@ -63,3 +63,8 @@ doc = false
 name = "binance-pm-readonly"
 path = "examples/pm_readonly_tester.rs"
 doc = false
+
+[[example]]
+name = "binance-pm-stream-probe"
+path = "examples/pm_stream_probe.rs"
+doc = false
