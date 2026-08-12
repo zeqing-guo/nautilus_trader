@@ -76,6 +76,8 @@ pub struct BinancePmExecutionClient {
     cancellation_token: CancellationToken,
     pending_tasks: TaskHandles,
     connected: Arc<AtomicBool>,
+    /// 持仓模式(connect 时实测确定;下单参数构建依赖它)。
+    position_mode: std::sync::atomic::AtomicU8, // 0=OneWay 1=Hedge
 }
 
 impl std::fmt::Debug for BinancePmExecutionClient {
@@ -126,6 +128,7 @@ impl BinancePmExecutionClient {
             cancellation_token: CancellationToken::new(),
             pending_tasks: TaskHandles::default(),
             connected: Arc::new(AtomicBool::new(false)),
+            position_mode: std::sync::atomic::AtomicU8::new(0),
         })
     }
 
@@ -318,6 +321,28 @@ fn tif_str(tif: TimeInForce) -> anyhow::Result<&'static str> {
     }
 }
 
+/// 持仓模式(启动时经 `um/positionSide/dual` 实测确定,两种都支持)。
+///
+/// one-way:`reduceOnly` 可传、`positionSide` 禁传;
+/// hedge:`positionSide` 必传(由 side+reduce_only 推导)、`reduceOnly` 禁传。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionMode {
+    /// 单向净持仓。
+    OneWay,
+    /// 双向持仓(生产账户 2026-08-12 实测为此模式)。
+    Hedge,
+}
+
+/// hedge 模式下按 side+平仓意图推导 positionSide:
+/// BUY+开=LONG、SELL+开=SHORT、BUY+平=SHORT(平空)、SELL+平=LONG(平多)。
+fn hedge_position_side(side: OrderSide, reduce_only: bool) -> &'static str {
+    match (side, reduce_only) {
+        (OrderSide::Buy, false) | (OrderSide::Sell, true) => "LONG",
+        (OrderSide::Sell, false) | (OrderSide::Buy, true) => "SHORT",
+        (OrderSide::NoOrderSide, _) => unreachable!("side 已在上游校验"),
+    }
+}
+
 /// 腿下单规格(从 `OrderAny` 提取的原语,参数映射层的输入)。
 struct LegOrderSpec {
     symbol: String,
@@ -329,6 +354,7 @@ struct LegOrderSpec {
     quantity: String,
     price: Option<String>,
     client_order_id: String,
+    position_mode: PositionMode,
 }
 
 /// 分流后的腿参数。
@@ -359,6 +385,15 @@ fn build_um_params(spec: LegOrderSpec) -> anyhow::Result<PmUmNewOrderParams> {
         other => anyhow::bail!("UM 腿不支持订单类型 {other:?}(papi um/order 仅 LIMIT/MARKET)"),
     };
 
+    // 模式感知:one-way 传 reduceOnly;hedge 传 positionSide(reduceOnly 禁传)。
+    let (reduce_only, position_side) = match spec.position_mode {
+        PositionMode::OneWay => (Some(spec.reduce_only), None),
+        PositionMode::Hedge => (
+            None,
+            Some(hedge_position_side(spec.side, spec.reduce_only).to_string()),
+        ),
+    };
+
     Ok(PmUmNewOrderParams {
         symbol: spec.symbol,
         side: side.to_string(),
@@ -366,7 +401,8 @@ fn build_um_params(spec: LegOrderSpec) -> anyhow::Result<PmUmNewOrderParams> {
         time_in_force: tif_opt,
         quantity: Some(spec.quantity),
         price: price_opt,
-        reduce_only: Some(spec.reduce_only),
+        reduce_only,
+        position_side,
         new_client_order_id: Some(spec.client_order_id),
         new_order_resp_type: Some("RESULT".to_string()),
         price_match: None,
@@ -502,19 +538,29 @@ impl ExecutionClient for BinancePmExecutionClient {
             return Ok(());
         }
 
-        // 1. 启动强制校验 one-way 持仓模式(reduceOnly 语义前提;fail-closed)。
-        if self.config.enforce_one_way_mode {
-            let mode = self
-                .http_client
-                .um_position_mode()
-                .await
-                .map_err(|e| anyhow::anyhow!("持仓模式校验失败,拒绝启动: {e}"))?;
-            anyhow::ensure!(
-                !mode.dual_side_position,
-                "账户为 hedge(双向)持仓模式,与 one-way/reduceOnly 语义冲突——拒绝启动。\
-                 请先在交易所切换为单向模式"
+        // 1. 持仓模式实测确定(两种模式都支持;enforce_one_way_mode=true 时
+        //    hedge 拒绝启动,生产账户实测为 hedge → 缺省关闭强制)。
+        let mode = self
+            .http_client
+            .um_position_mode()
+            .await
+            .map_err(|e| anyhow::anyhow!("持仓模式查询失败,拒绝启动: {e}"))?;
+        if mode.dual_side_position && self.config.enforce_one_way_mode {
+            anyhow::bail!(
+                "账户为 hedge(双向)模式且 enforce_one_way_mode=true——拒绝启动。\
+                 切 one-way 须先清空全部持仓与挂单"
             );
         }
+        self.position_mode
+            .store(u8::from(mode.dual_side_position), Ordering::Relaxed);
+        log::info!(
+            "持仓模式:{}(下单参数按此构建)",
+            if mode.dual_side_position {
+                "hedge(双向)"
+            } else {
+                "one-way(单向)"
+            }
+        );
 
         // 2. 账户快照先行(AccountState 必须在任何订单事件前就绪)。
         self.refresh_account_state()
@@ -601,6 +647,11 @@ impl ExecutionClient for BinancePmExecutionClient {
             quantity,
             price,
             client_order_id: client_order_id.to_string(),
+            position_mode: if self.position_mode.load(Ordering::Relaxed) == 1 {
+                PositionMode::Hedge
+            } else {
+                PositionMode::OneWay
+            },
         };
         let params = if um_leg {
             LegParams::Um(build_um_params(spec)?)
@@ -1120,7 +1171,42 @@ mod tests {
             quantity: "1.34".to_string(),
             price: price.map(ToString::to_string),
             client_order_id: "ft01J5KXAMPLE0000000000000AB".to_string(),
+            position_mode: PositionMode::OneWay,
         }
+    }
+
+    #[test]
+    fn hedge_mode_sends_position_side_and_omits_reduce_only() {
+        // 生产账户实测 hedge:开空 SELL→SHORT、平空 BUY(reduce)→SHORT,
+        // reduceOnly 禁传。
+        let mut open_spec = spec(
+            OrderSide::Sell,
+            OrderType::Limit,
+            TimeInForce::Gtc,
+            true,
+            false,
+            Some("180.50"),
+        );
+        open_spec.position_mode = PositionMode::Hedge;
+        let p = build_um_params(open_spec).unwrap();
+        assert_eq!(p.position_side.as_deref(), Some("SHORT"));
+        assert!(p.reduce_only.is_none(), "hedge 模式禁传 reduceOnly");
+
+        let mut close_spec = spec(
+            OrderSide::Buy,
+            OrderType::Limit,
+            TimeInForce::Ioc,
+            false,
+            true, // 平空
+            Some("181.00"),
+        );
+        close_spec.position_mode = PositionMode::Hedge;
+        let p = build_um_params(close_spec).unwrap();
+        assert_eq!(p.position_side.as_deref(), Some("SHORT"));
+        assert!(p.reduce_only.is_none());
+        let qs = serde_urlencoded::to_string(&p).unwrap();
+        assert!(qs.contains("positionSide=SHORT"));
+        assert!(!qs.contains("reduceOnly"));
     }
 
     #[test]

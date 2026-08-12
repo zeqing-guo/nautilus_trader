@@ -52,6 +52,7 @@ fn um_order_params() -> PmUmNewOrderParams {
         quantity: Some("1.34".to_string()),
         price: Some("180.50".to_string()),
         reduce_only: Some(false),
+        position_side: None,
         new_client_order_id: Some("ft01TEST0000000000000000000A".to_string()),
         new_order_resp_type: Some("RESULT".to_string()),
         price_match: None,

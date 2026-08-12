@@ -49,8 +49,9 @@ pub struct BinancePmExecClientConfig {
     pub dead_stream_after_ms: i64,
     /// listenKey 重建冷却(ms)。
     pub create_retry_cooldown_ms: i64,
-    /// 启动强制校验 one-way 持仓模式(hedge 模式下 reduceOnly 语义不成立,
-    /// **保持 true,fail-closed 拒绝启动**;仅测试可关)。
+    /// 强制要求 one-way 持仓模式(true 时 hedge 账户拒绝启动)。
+    /// 生产账户实测(2026-08-12)为 hedge 模式,适配器两种模式都支持
+    /// (hedge:positionSide 必传、reduceOnly 禁传)→ 缺省 false。
     pub enforce_one_way_mode: bool,
 }
 
@@ -70,7 +71,7 @@ impl Default for BinancePmExecClientConfig {
             rotate_after_ms: DEFAULT_ROTATE_AFTER_MS,
             dead_stream_after_ms: DEFAULT_DEAD_STREAM_AFTER_MS,
             create_retry_cooldown_ms: DEFAULT_CREATE_RETRY_COOLDOWN_MS,
-            enforce_one_way_mode: true,
+            enforce_one_way_mode: false,
         }
     }
 }
@@ -111,8 +112,8 @@ mod tests {
     #[test]
     fn default_config_is_safe() {
         let cfg = BinancePmExecClientConfig::default();
-        // 安全缺省:强制 one-way 校验、生产 WS base、无明文凭证。
-        assert!(cfg.enforce_one_way_mode);
+        // 安全缺省:生产 WS base、无明文凭证;持仓模式实测感知(不强制 one-way)。
+        assert!(!cfg.enforce_one_way_mode);
         assert_eq!(cfg.base_url_ws, BINANCE_PM_WS_URL);
         assert!(cfg.api_key.is_none() && cfg.api_secret.is_none());
         assert!(cfg.rotate_after_ms < 24 * 60 * 60 * 1000);

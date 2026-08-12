@@ -68,9 +68,13 @@ pub struct PmUmNewOrderParams {
     /// 价格(LIMIT 必传;与 priceMatch 互斥)。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price: Option<String>,
-    /// 平仓腿恒 true(one-way 模式专用;hedge 模式禁传,我方只跑 one-way)。
+    /// 平仓标志(**仅 one-way 模式可传**;hedge 模式必须 None,违者 -1106/-4062)。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reduce_only: Option<bool>,
+    /// 持仓方向(**仅 hedge 模式必传** LONG/SHORT;one-way 必须 None)。
+    /// 生产账户实测(2026-08-12)为 hedge 模式,两种模式适配器都支持。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position_side: Option<String>,
     /// 我方幂等根(ft+ULID),先过 [`validate_client_order_id`]。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_client_order_id: Option<String>,
@@ -284,6 +288,7 @@ mod tests {
             quantity: Some("1.34".to_string()),
             price: Some("180.50".to_string()),
             reduce_only: Some(false),
+            position_side: None,
             new_client_order_id: Some("ft01J5KXAMPLE0000000000000AB".to_string()),
             new_order_resp_type: Some("RESULT".to_string()),
             price_match: None,
@@ -310,6 +315,7 @@ mod tests {
             quantity: Some("1.34".to_string()),
             price: Some("181.00".to_string()),
             reduce_only: Some(true),
+            position_side: None,
             new_client_order_id: None,
             new_order_resp_type: None,
             price_match: None,
