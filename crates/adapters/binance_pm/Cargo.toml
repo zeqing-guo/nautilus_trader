@@ -1,0 +1,45 @@
+[package]
+name = "nautilus-binance-pm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Binance Portfolio Margin (papi) adapter for the Nautilus trading engine (fuzzy-trading fork)"
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "nautilus_binance_pm"
+crate-type = ["rlib"]
+
+[features]
+default = ["high-precision"]
+high-precision = ["nautilus-binance/high-precision"]
+
+[dependencies]
+nautilus-binance = { workspace = true }
+nautilus-network = { workspace = true }
+
+# 官方 Binance SDK(MIT):只读/对账/listenKey 路径的 wire 层一律走它(官方周更维护)。
+# 写路径(下单/撤单)除外——其传输层错误塌缩为字符串,无法区分「确定未达」与
+# 「可能已受理」,见 src/sdk.rs 模块文档。版本钉死:官方 major 每周都在涨,升级走显式 diff。
+binance-sdk = { version = "=68.1.1", features = ["derivatives_trading_portfolio_margin"] }
+
+anyhow = { workspace = true }
+jiff = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+# 运行:cargo run --example binance-pm-ping --package nautilus-binance-pm
+[[example]]
+name = "binance-pm-ping"
+path = "examples/pm_ping_tester.rs"
+doc = false
