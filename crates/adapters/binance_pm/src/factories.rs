@@ -52,10 +52,12 @@ impl ExecutionClientFactory for BinancePmExecutionClientFactory {
         Ok(Box::new(client))
     }
 
+    #[allow(clippy::unnecessary_literal_bound)] // trait 签名固定 &str
     fn name(&self) -> &str {
         "BINANCE_PM"
     }
 
+    #[allow(clippy::unnecessary_literal_bound)] // trait 签名固定 &str
     fn config_type(&self) -> &str {
         "BinancePmExecClientConfig"
     }
