@@ -193,6 +193,116 @@ pub struct PmMarginOrder {
     pub fills: Vec<PmMarginFill>,
 }
 
+/// UM 成交条目(`GET /papi/v1/um/userTrades`)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmUmTrade {
+    /// 交易对。
+    pub symbol: String,
+    /// 成交 ID(幂等键)。
+    pub id: i64,
+    /// 订单 ID。
+    pub order_id: i64,
+    /// BUY/SELL。
+    pub side: String,
+    /// 成交价。
+    pub price: String,
+    /// 成交量。
+    pub qty: String,
+    /// 成交金额。
+    #[serde(default)]
+    pub quote_qty: Option<String>,
+    /// 已实现盈亏。
+    #[serde(default)]
+    pub realized_pnl: Option<String>,
+    /// 手续费。
+    pub commission: String,
+    /// 手续费资产。
+    pub commission_asset: String,
+    /// 成交时间(ms)。
+    pub time: i64,
+    /// 是否买方。
+    pub buyer: bool,
+    /// 是否 maker。
+    pub maker: bool,
+    /// 持仓方向。
+    #[serde(default)]
+    pub position_side: Option<String>,
+}
+
+/// margin 成交条目(`GET /papi/v1/margin/myTrades`)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmMarginTrade {
+    /// 交易对。
+    pub symbol: String,
+    /// 成交 ID(幂等键)。
+    pub id: i64,
+    /// 订单 ID。
+    pub order_id: i64,
+    /// 成交价。
+    pub price: String,
+    /// 成交量。
+    pub qty: String,
+    /// 手续费。
+    pub commission: String,
+    /// 手续费资产。
+    pub commission_asset: String,
+    /// 成交时间(ms)。
+    pub time: i64,
+    /// 是否买方。
+    pub is_buyer: bool,
+    /// 是否 maker。
+    pub is_maker: bool,
+}
+
+/// `GET /papi/v1/um/positionSide/dual` 响应(启动强制校验 one-way 的依据)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmPositionMode {
+    /// true = hedge(双向),false = one-way(单向,我方要求)。
+    pub dual_side_position: bool,
+}
+
+/// `GET /papi/v1/rateLimit/order` 条目(下单限速用量,接健康检查)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmRateLimitOrder {
+    /// 限速类型(ORDERS)。
+    pub rate_limit_type: String,
+    /// 计数周期(MINUTE 等)。
+    pub interval: String,
+    /// 周期倍数。
+    pub interval_num: u32,
+    /// 上限。
+    pub limit: u32,
+    /// 当前用量(部分响应携带)。
+    #[serde(default)]
+    pub count: Option<u32>,
+}
+
+/// `GET /papi/v1/um/income` 条目(FUNDING_FEE 归档;仅保留 3 个月)。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmIncome {
+    /// 交易对(账户级收益为空)。
+    #[serde(default)]
+    pub symbol: Option<String>,
+    /// 收益类型。
+    pub income_type: String,
+    /// 金额(带符号)。
+    pub income: String,
+    /// 资产。
+    pub asset: String,
+    /// 时间(ms)。
+    pub time: i64,
+    /// 流水 ID(幂等键)。
+    pub tran_id: i64,
+    /// 关联成交 ID。
+    #[serde(default)]
+    pub trade_id: Option<String>,
+}
+
 /// `GET /papi/v1/um/positionRisk` 单持仓条目(返回数组)。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

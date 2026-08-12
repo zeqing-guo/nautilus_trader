@@ -19,12 +19,13 @@ use crate::common::consts::{
 };
 use crate::common::error::{BinancePmHttpError, BinancePmHttpResult};
 use crate::http::models::{
-    BinanceErrorResponse, PmAccount, PmBalance, PmListenKey, PmMarginOrder, PmServerTime,
-    PmUmOrder, PmUmPositionRisk,
+    BinanceErrorResponse, PmAccount, PmBalance, PmIncome, PmListenKey, PmMarginOrder,
+    PmMarginTrade, PmPositionMode, PmRateLimitOrder, PmServerTime, PmUmOrder, PmUmPositionRisk,
+    PmUmTrade,
 };
 use crate::http::query::{
-    PmBalanceParams, PmMarginNewOrderParams, PmOpenOrdersParams, PmOrderRefParams,
-    PmPositionRiskParams, PmUmNewOrderParams,
+    PmAllOrdersParams, PmBalanceParams, PmIncomeParams, PmMarginNewOrderParams, PmOpenOrdersParams,
+    PmOrderRefParams, PmPositionRiskParams, PmTradesParams, PmUmNewOrderParams,
 };
 
 /// 端点安全模式(官方 Security Type 三态)。
@@ -361,6 +362,138 @@ impl BinancePmHttpClient {
             Method::GET,
             "/papi/v1/margin/openOrders",
             Some(&params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/um/allOrders`(签名,权重 5;时间跨度 <7 天)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn um_all_orders(
+        &self,
+        params: &PmAllOrdersParams,
+    ) -> BinancePmHttpResult<Vec<PmUmOrder>> {
+        self.request(
+            Method::GET,
+            "/papi/v1/um/allOrders",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/margin/allOrders`(签名,**权重 100**——每分钟最多 60 次,
+    /// 严禁按 symbol 循环,须时间窗合并 + 缓存)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn margin_all_orders(
+        &self,
+        params: &PmAllOrdersParams,
+    ) -> BinancePmHttpResult<Vec<PmMarginOrder>> {
+        self.request(
+            Method::GET,
+            "/papi/v1/margin/allOrders",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/um/userTrades`(签名,权重 5;时间窗 ≤7 天,fromId 与
+    /// 时间窗互斥)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn um_user_trades(
+        &self,
+        params: &PmTradesParams,
+    ) -> BinancePmHttpResult<Vec<PmUmTrade>> {
+        self.request(
+            Method::GET,
+            "/papi/v1/um/userTrades",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/margin/myTrades`(签名,权重 5;**时间窗 <24 小时**,
+    /// 补历史须按天切片)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn margin_my_trades(
+        &self,
+        params: &PmTradesParams,
+    ) -> BinancePmHttpResult<Vec<PmMarginTrade>> {
+        self.request(
+            Method::GET,
+            "/papi/v1/margin/myTrades",
+            Some(params),
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/um/positionSide/dual`(签名)——持仓模式。
+    ///
+    /// 启动强制校验:`dual_side_position` 必须为 false(one-way),否则
+    /// reduceOnly 语义不成立,执行客户端应拒绝启动。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn um_position_mode(&self) -> BinancePmHttpResult<PmPositionMode> {
+        self.request::<(), _>(
+            Method::GET,
+            "/papi/v1/um/positionSide/dual",
+            None,
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/rateLimit/order`(签名,权重 1)——下单限速用量,接
+    /// 健康检查。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn order_rate_limit(&self) -> BinancePmHttpResult<Vec<PmRateLimitOrder>> {
+        self.request::<(), _>(
+            Method::GET,
+            "/papi/v1/rateLimit/order",
+            None,
+            Security::Signed,
+            false,
+        )
+        .await
+    }
+
+    /// `GET /papi/v1/um/income`(签名,权重 30)——收益流水(FUNDING_FEE 归档;
+    /// 仅保留 3 个月,长周期归档须落库;实时归因走 WS `ACCOUNT_UPDATE`)。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn um_income(&self, params: &PmIncomeParams) -> BinancePmHttpResult<Vec<PmIncome>> {
+        self.request(
+            Method::GET,
+            "/papi/v1/um/income",
+            Some(params),
             Security::Signed,
             false,
         )

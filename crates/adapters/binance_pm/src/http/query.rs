@@ -185,6 +185,79 @@ impl PmOrderRefParams {
     }
 }
 
+/// `GET /papi/v1/{um|margin}/allOrders` 参数(lookback 对账)。
+///
+/// ⚠️ 时间窗:UM 跨度 <7 天;margin 权重 **100**(每分钟最多 60 次,严禁按
+/// symbol 循环,须时间窗合并 + 缓存)。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmAllOrdersParams {
+    /// 交易对(必传)。
+    pub symbol: String,
+    /// 起始订单 ID(返回 ≥ 该 id)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<i64>,
+    /// 起始时间(ms)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<i64>,
+    /// 结束时间(ms)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
+    /// 条数上限。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// `GET /papi/v1/um/userTrades` / `margin/myTrades` 参数(成交流水对账)。
+///
+/// ⚠️ 时间窗不对称:UM ≤7 天,**margin <24 小时**(补历史须按天切片);
+/// UM 侧 `fromId` 不能与时间窗同传。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmTradesParams {
+    /// 交易对(必传)。
+    pub symbol: String,
+    /// 按订单过滤(仅 margin/myTrades 支持)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<i64>,
+    /// 起始时间(ms)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<i64>,
+    /// 结束时间(ms)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
+    /// 起始成交 ID(与时间窗互斥,UM)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_id: Option<i64>,
+    /// 条数上限。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// `GET /papi/v1/um/income` 参数(资金费归档;仅保留 3 个月,分页 page+limit)。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmIncomeParams {
+    /// 交易对(可选)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// 收益类型(FUNDING_FEE/REALIZED_PNL/COMMISSION/…)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub income_type: Option<String>,
+    /// 起始时间(ms)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<i64>,
+    /// 结束时间(ms)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
+    /// 页码(papi income 用 page 而非 fromId)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    /// 条数上限。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
 /// `GET /papi/v1/{um|margin}/openOrders` 参数。
 ///
 /// symbol 必传:margin 侧不带 symbol 按全市场 symbol 数计费(天价);UM 侧
