@@ -78,10 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "[7] positionSide/dual: dual={}(必须 false=one-way,否则 reduceOnly 不成立)",
         mode.dual_side_position
     );
-    assert!(
-        !mode.dual_side_position,
-        "账户是 hedge 模式,执行客户端会拒绝启动"
-    );
+    if mode.dual_side_position {
+        return Err("账户是 hedge 模式,执行客户端会拒绝启动".into());
+    }
 
     let limits = client.order_rate_limit().await?;
     for l in &limits {
