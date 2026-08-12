@@ -500,6 +500,49 @@ impl BinancePmHttpClient {
         .await
     }
 
+    /// `DELETE /papi/v1/um/allOpenOrders?symbol=`(签名)——UM 按 symbol 全撤。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn cancel_all_um_orders(&self, symbol: &str) -> BinancePmHttpResult<()> {
+        let params = PmOpenOrdersParams {
+            symbol: symbol.to_string(),
+        };
+        let _: serde_json::Value = self
+            .request(
+                Method::DELETE,
+                "/papi/v1/um/allOpenOrders",
+                Some(&params),
+                Security::Signed,
+                false,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// `DELETE /papi/v1/margin/allOpenOrders?symbol=`(签名)——margin 按
+    /// symbol 全撤。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn cancel_all_margin_orders(&self, symbol: &str) -> BinancePmHttpResult<()> {
+        let params = PmOpenOrdersParams {
+            symbol: symbol.to_string(),
+        };
+        let _: serde_json::Value = self
+            .request(
+                Method::DELETE,
+                "/papi/v1/margin/allOpenOrders",
+                Some(&params),
+                Security::Signed,
+                false,
+            )
+            .await?;
+        Ok(())
+    }
+
     /// `POST /papi/v1/listenKey`(仅 API-Key)——创建/续期用户流 listenKey。
     ///
     /// papi 语义:已有活跃 key 时返回同一个 key 并续期 60 分钟。
