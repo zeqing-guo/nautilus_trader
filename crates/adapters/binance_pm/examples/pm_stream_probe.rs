@@ -106,6 +106,7 @@ fn event_name(ev: &PmUserStreamEvent) -> &'static str {
         PmUserStreamEvent::ListenKeyExpired(_) => "listenKeyExpired",
         PmUserStreamEvent::ConditionalOrderTradeUpdate(_) => "CONDITIONAL_ORDER_TRADE_UPDATE",
         PmUserStreamEvent::AlgoUpdate(_) => "ALGO_UPDATE",
+        PmUserStreamEvent::PositionHistoryUpdate(_) => "POSITION_HISTORY_UPDATE",
         PmUserStreamEvent::Unknown { .. } => "unknown",
     }
 }
