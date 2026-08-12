@@ -16,6 +16,14 @@ pub struct BinanceErrorResponse {
     pub msg: String,
 }
 
+/// `POST /papi/v1/listenKey` 响应。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmListenKey {
+    /// 用户流 listenKey(60 分钟有效)。
+    pub listen_key: String,
+}
+
 /// `GET /papi/v1/time` 响应。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

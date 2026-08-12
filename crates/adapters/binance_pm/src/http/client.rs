@@ -19,9 +19,23 @@ use crate::common::consts::{
 };
 use crate::common::error::{BinancePmHttpError, BinancePmHttpResult};
 use crate::http::models::{
-    BinanceErrorResponse, PmAccount, PmBalance, PmServerTime, PmUmPositionRisk,
+    BinanceErrorResponse, PmAccount, PmBalance, PmListenKey, PmServerTime, PmUmPositionRisk,
 };
 use crate::http::query::{PmBalanceParams, PmPositionRiskParams};
+
+/// 端点安全模式(官方 Security Type 三态)。
+///
+/// 注意:listenKey(USER_STREAM)是 **仅 API-Key、不签名**——官方 SDK 实现如此
+/// (general-info 的 Security Type 表述有误,以 SDK/实测为准);PUT 不带任何参数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Security {
+    /// 无鉴权(papi 仅 ping/time)。
+    Public,
+    /// 仅 `X-MBX-APIKEY` 头,不签名(listenKey 生命周期)。
+    ApiKeyOnly,
+    /// API-Key 头 + HMAC 签名(其余全部端点)。
+    Signed,
+}
 
 /// papi REST client。
 #[derive(Debug)]
@@ -89,7 +103,7 @@ impl BinancePmHttpClient {
     /// 传输失败或非 2xx 时报错。
     pub async fn ping(&self) -> BinancePmHttpResult<()> {
         let _: serde_json::Value = self
-            .request::<(), _>(Method::GET, "/papi/v1/ping", None, false, false)
+            .request::<(), _>(Method::GET, "/papi/v1/ping", None, Security::Public, false)
             .await?;
         Ok(())
     }
@@ -100,7 +114,7 @@ impl BinancePmHttpClient {
     ///
     /// 传输失败或非 2xx 时报错。
     pub async fn server_time(&self) -> BinancePmHttpResult<PmServerTime> {
-        self.request::<(), _>(Method::GET, "/papi/v1/time", None, false, false)
+        self.request::<(), _>(Method::GET, "/papi/v1/time", None, Security::Public, false)
             .await
     }
 
@@ -110,8 +124,14 @@ impl BinancePmHttpClient {
     ///
     /// 未配置凭证、传输失败或业务错误时报错。
     pub async fn balances(&self) -> BinancePmHttpResult<Vec<PmBalance>> {
-        self.request::<(), _>(Method::GET, "/papi/v1/balance", None, true, false)
-            .await
+        self.request::<(), _>(
+            Method::GET,
+            "/papi/v1/balance",
+            None,
+            Security::Signed,
+            false,
+        )
+        .await
     }
 
     /// `GET /papi/v1/balance?asset=`(签名)——单资产余额(papi 语义:带 asset
@@ -124,8 +144,14 @@ impl BinancePmHttpClient {
         let params = PmBalanceParams {
             asset: Some(asset.to_string()),
         };
-        self.request(Method::GET, "/papi/v1/balance", Some(&params), true, false)
-            .await
+        self.request(
+            Method::GET,
+            "/papi/v1/balance",
+            Some(&params),
+            Security::Signed,
+            false,
+        )
+        .await
     }
 
     /// `GET /papi/v1/account`(签名)——账户级风险指标(uniMMR/权益/维持保证金)。
@@ -134,8 +160,14 @@ impl BinancePmHttpClient {
     ///
     /// 未配置凭证、传输失败或业务错误时报错。
     pub async fn account(&self) -> BinancePmHttpResult<PmAccount> {
-        self.request::<(), _>(Method::GET, "/papi/v1/account", None, true, false)
-            .await
+        self.request::<(), _>(
+            Method::GET,
+            "/papi/v1/account",
+            None,
+            Security::Signed,
+            false,
+        )
+        .await
     }
 
     /// `GET /papi/v1/um/positionRisk`(签名)——UM 持仓。
@@ -154,19 +186,76 @@ impl BinancePmHttpClient {
             Method::GET,
             "/papi/v1/um/positionRisk",
             Some(&params),
-            true,
+            Security::Signed,
             false,
         )
         .await
     }
 
-    /// 通用请求:可选签名,`use_order_quota` 决定是否额外占用下单配额桶。
+    /// `POST /papi/v1/listenKey`(仅 API-Key)——创建/续期用户流 listenKey。
+    ///
+    /// papi 语义:已有活跃 key 时返回同一个 key 并续期 60 分钟。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn create_listen_key(&self) -> BinancePmHttpResult<PmListenKey> {
+        self.request::<(), _>(
+            Method::POST,
+            "/papi/v1/listenKey",
+            None,
+            Security::ApiKeyOnly,
+            false,
+        )
+        .await
+    }
+
+    /// `PUT /papi/v1/listenKey`(仅 API-Key,**不带任何参数**)——续期 60 分钟。
+    ///
+    /// 失败返回 `-1125`(listenKey 不存在)时,调用方必须**重建**(重新 POST)
+    /// 而不是重试本请求。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误(含 -1125)时报错。
+    pub async fn keepalive_listen_key(&self) -> BinancePmHttpResult<()> {
+        let _: serde_json::Value = self
+            .request::<(), _>(
+                Method::PUT,
+                "/papi/v1/listenKey",
+                None,
+                Security::ApiKeyOnly,
+                false,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// `DELETE /papi/v1/listenKey`(仅 API-Key)——立即失效用户流。
+    ///
+    /// # Errors
+    ///
+    /// 未配置凭证、传输失败或业务错误时报错。
+    pub async fn close_listen_key(&self) -> BinancePmHttpResult<()> {
+        let _: serde_json::Value = self
+            .request::<(), _>(
+                Method::DELETE,
+                "/papi/v1/listenKey",
+                None,
+                Security::ApiKeyOnly,
+                false,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// 通用请求:按安全模式处理鉴权,`use_order_quota` 决定是否额外占用下单配额桶。
     async fn request<P, T>(
         &self,
         method: Method,
         path: &str,
         params: Option<&P>,
-        signed: bool,
+        security: Security,
         use_order_quota: bool,
     ) -> BinancePmHttpResult<T>
     where
@@ -181,29 +270,42 @@ impl BinancePmHttpClient {
 
         let mut headers = HashMap::new();
 
-        if signed {
-            let cred = self
-                .credential
-                .as_ref()
-                .ok_or(BinancePmHttpError::MissingCredentials)?;
-
-            if !query.is_empty() {
-                query.push('&');
+        match security {
+            Security::Public => {}
+            Security::ApiKeyOnly => {
+                let cred = self
+                    .credential
+                    .as_ref()
+                    .ok_or(BinancePmHttpError::MissingCredentials)?;
+                headers.insert(
+                    BINANCE_API_KEY_HEADER.to_string(),
+                    cred.api_key().to_string(),
+                );
             }
+            Security::Signed => {
+                let cred = self
+                    .credential
+                    .as_ref()
+                    .ok_or(BinancePmHttpError::MissingCredentials)?;
 
-            let timestamp = Timestamp::now().as_millisecond();
-            query.push_str(&format!("timestamp={timestamp}"));
+                if !query.is_empty() {
+                    query.push('&');
+                }
 
-            if let Some(recv_window) = self.recv_window {
-                query.push_str(&format!("&recvWindow={recv_window}"));
+                let timestamp = Timestamp::now().as_millisecond();
+                query.push_str(&format!("timestamp={timestamp}"));
+
+                if let Some(recv_window) = self.recv_window {
+                    query.push_str(&format!("&recvWindow={recv_window}"));
+                }
+
+                let signature = percent_encode(&cred.sign(&query));
+                query.push_str(&format!("&signature={signature}"));
+                headers.insert(
+                    BINANCE_API_KEY_HEADER.to_string(),
+                    cred.api_key().to_string(),
+                );
             }
-
-            let signature = percent_encode(&cred.sign(&query));
-            query.push_str(&format!("&signature={signature}"));
-            headers.insert(
-                BINANCE_API_KEY_HEADER.to_string(),
-                cred.api_key().to_string(),
-            );
         }
 
         let url = build_url(&self.base_url, path, &query);
